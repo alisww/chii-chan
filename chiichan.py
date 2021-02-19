@@ -35,14 +35,18 @@ async def search(ctx, *, querystring):
             description=res['summary'],
             color=0xff7474
         )
-        if res.get('thumbnail'):
+
+        if res.get('thumbnail',False):
             embed.set_thumbnail(url=res['thumbnail'])
-        if res.get('year'):
-            embed.add_field(name="Year", value=res['year'], inline=True)
-        if res.get('rating'):
+
+        if res.get('year',False):
             embed.add_field(name="Year", value=res['year'], inline=True)
 
+        if res.get('rating',False):
+            embed.add_field(name="Rating", value=res['rating'], inline=True)
+
         embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
+
         return embed
 
     none_embed = discord.Embed(title='no results ):')
@@ -96,24 +100,26 @@ async def search(ctx, *, querystring):
 async def series(ctx, *, querystring):
     res = pymanga.search(querystring)['series']
     if len(res) > 0:
-        series = pymanga.series(res[0]['id'])
-        embed=discord.Embed(title=series['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=series['description'], color=0xf77665)
+        manga = pymanga.series(res[0]['id'])
+        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=manga['description'], color=0xf77665)
 
-        embed.set_author(name=', '.join([a['name'] for a in series['artists']]))
-        embed.set_image(url=series['image'])
+        embed.set_author(name=', '.join([a['name'] for a in manga['artists']]))
+        embed.set_image(url=manga['image'])
 
-        embed.add_field(name="Genres", value=', '.join(series['genres']), inline=False)
-        embed.add_field(name="Type", value=series['type'], inline=True)
-        embed.add_field(name="Year", value=series['year'], inline=True)
-        embed.add_field(name="Status", value=series['status'], inline=True)
+        embed.add_field(name="Genres", value=', '.join(manga['genres']), inline=False)
+        
+        embed.add_field(name="Type", value=manga['type'], inline=True)
+        embed.add_field(name="Year", value=manga['year'], inline=True)
+        embed.add_field(name="Status", value=manga['status'], inline=True)
 
-        if series['average']:
-            embed.add_field(name="Rating", value=series['average']['average'], inline=True)
+        if manga['average']:
+            embed.add_field(name="Rating", value=manga['average']['average'], inline=True)
 
-        if series['associated_names']:
-            embed.add_field(name="Also known as",value='\n'.join(series['associated_names']))
-        if series['related_series']:
-            embed.add_field(name="Related series",value='\n'.join(series['related_series']))
+        if manga['associated_names']:
+            embed.add_field(name="Also known as",value='\n'.join(manga['associated_names']))
+        if manga['related_series']:
+            embed.add_field(name="Related series",value='\n'.join(manga['related_series']))
+
         await ctx.send(embed=embed)
     else:
         await ctx.send(embed=discord.Embed(title='no results ):'))
