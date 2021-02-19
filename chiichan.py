@@ -17,9 +17,12 @@ bot.remove_command("help")
 @bot.command()
 async def search(ctx, *, querystring):
     params = {}
-    for arg in re.finditer(r"""(.+?):['"](.+?)['"]""",querystring):
+    for arg in re.finditer(r"""(.+?):(?:(?:['"](?P<quotedarg>.+?)['"])|(?P<arg>[^\s]+?(?:\s|$){1}))""",querystring):
+        groups = arg.groupdict()
         field = arg.group(1).strip()
-        param = [a.strip() for a in arg.group(2).split(',')]
+
+        param = groups['quotedarg'] if groups['quotedarg'] else groups['arg']
+        param = [a.strip() for a in param.split(',')]
 
         if field == 'genre' or field == 'category' or field == 'exclude_genre':
             if field not in params:
@@ -107,7 +110,7 @@ async def series(ctx, *, querystring):
         embed.set_image(url=manga['image'])
 
         embed.add_field(name="Genres", value=', '.join(manga['genres']), inline=False)
-        
+
         embed.add_field(name="Type", value=manga['type'], inline=True)
         embed.add_field(name="Year", value=manga['year'], inline=True)
         embed.add_field(name="Status", value=manga['status'], inline=True)
