@@ -123,9 +123,9 @@ async def series(ctx, *, querystring):
     res = pymanga.search(querystring)['series']
     if len(res) > 0:
         manga = pymanga.series(res[0]['id'])
-        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=manga['description'], color=0xf77665)
+        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=manga['description'].split("[**M**ore...]")[0], color=0xf77665)
 
-        embed.set_author(name=', '.join([a['name'] for a in manga['artists']]))
+        embed.set_author(name=', '.join([a['name'] for a in manga['authors']]))
         embed.set_image(url=manga['image'])
 
         embed.add_field(name="Genres", value=', '.join(manga['genres']), inline=False)
@@ -171,7 +171,7 @@ async def help(ctx,*args):
         h = f"""
         **{ctx.prefix}search [query]**
         searches manga by the specified attributes and returns a scrollable results list.
-        *ex: {ctx.prefix}series genre:'Yuri, Shoujo Ai' exclude_genre:'Tragedy'*
+        *ex: {ctx.prefix}search orderby:rating genre:'Yuri, Shoujo Ai' exclude_genre:'Tragedy'*
 
         **Available Search Attributes**
         *orderby* -> 'title', 'rating' or 'year'; determines how the results are sorted
