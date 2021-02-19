@@ -120,6 +120,7 @@ async def help(ctx,*args):
 
         *made by allie (at sapphicfettucine#6248 or on [cat-girl.gay](https://cat-girl.gay))*
         *using [mangaupdates.com](https://mangaupdates.com)*
+        *source code on [github.com/alisww/chii-chan](https://github.com/alisww/chii-chan)*
         *profile picture and name borrowed from Girl's Last Tour*
         """
     elif args[0] == "series":
