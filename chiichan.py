@@ -5,13 +5,15 @@ import re
 import pymanga
 import requests
 import io
-import configparser
+import toml
 
+config = {}
+with open("chiichan.toml") as f:
+    config = toml.load(f)
 
-config = configparser.ConfigParser()
-config.read('chiichan.ini')
+filtered_genres = set([g.lower() for g in config.get('filtering',{}).get('exclude_genres',[])])
 #
-bot = commands.Bot(command_prefix=config['Discord'].get('prefix','$'))
+bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'))
 bot.remove_command("help")
 
 @bot.command()
@@ -27,7 +29,10 @@ async def search(ctx, *, querystring):
         if field == 'genre' or field == 'category' or field == 'exclude_genre':
             if field not in params:
                 params[field] = []
-            params[field] = params[field] + param
+            if field == 'genre':
+                params[field] = params[field] + [genre for genre in param if not set([genre.strip().lower()]) & filtered_genres]
+            else:
+                params[field] = params[field] + param
         else:
             params[field] = param[0]
 
@@ -54,10 +59,26 @@ async def search(ctx, *, querystring):
 
     none_embed = discord.Embed(title='no results ):')
 
-    results_iter = (result_to_embed(res) for res in pymanga.advanced_search_iter(params))
-    results = [next(results_iter,none_embed)]
-
     idx = 0
+
+    results_iter = pymanga.advanced_search_iter(params)
+    results = []
+
+    def consume():
+        r = next(results_iter,None)
+        while r:
+            if not filtered_genres & set([a.strip().lower() for a in r['genres']]):
+                results.append(result_to_embed(r))
+                break
+            else:
+                r = next(results_iter,None)
+        if r:
+            return 1
+        else:
+            return 0
+
+    consume()
+
     message = await ctx.send(embed=results[0])
     # getting the message object for editing and reacting
 
@@ -68,6 +89,7 @@ async def search(ctx, *, querystring):
         return user == ctx.author and str(reaction.emoji) in ["◀️", "▶️"]
         # This makes sure nobody except the command sender can interact with the "menu"
 
+
     while True:
         try:
             reaction, user = await bot.wait_for("reaction_add", timeout=60, check=check)
@@ -76,10 +98,7 @@ async def search(ctx, *, querystring):
 
             if str(reaction.emoji) == "▶️":
                 if idx+1 > len(results)-1:
-                    r = next(results_iter,None)
-                    if r:
-                        idx += 1
-                        results.append(r)
+                    idx += consume()
                 else:
                     idx += 1
 
@@ -199,4 +218,4 @@ async def help(ctx,*args):
     embed=discord.Embed(description=h, color=0xf77665)
     await ctx.send(embed=embed)
 
-bot.run(config['Discord']['token'])
+bot.run(config['discord']['token'])
