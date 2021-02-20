@@ -407,15 +407,16 @@ class NotifierCog(commands.Cog):
                 db.commit()
 
                 for guild,users in manga['guilds'].items():
-                    embed = discord.Embed(
-                        title=f"**{manga['title']} - Chapter {latest}**",
-                        description=f"Hey {', '.join([f'<@!{user}>' for user in users])}! There's a new chapter of {manga['title']} out.",
-                        color=0xf77665)
-                    embed.set_thumbnail(url=manga['image'])
-                    embed.add_field(name="Scanlation Group", value=f"[{release['group']['name']}](https://www.mangaupdates.com/groups.html?id={release['group']['id']})" if 'id' in release['group'] else release['group']['name'], inline=False)
+                    if db[guild]['notify']:
+                        embed = discord.Embed(
+                            title=f"**{manga['title']} - Chapter {latest}**",
+                            description=f"Hey {', '.join([f'<@!{user}>' for user in users])}! There's a new chapter of {manga['title']} out.",
+                            color=0xf77665)
+                        embed.set_thumbnail(url=manga['image'])
+                        embed.add_field(name="Scanlation Group", value=f"[{release['group']['name']}](https://www.mangaupdates.com/groups.html?id={release['group']['id']})" if 'id' in release['group'] else release['group']['name'], inline=False)
 
-                    channel = await self.bot.fetch_channel(db[guild]['channel'])
-                    await channel.send(embed=embed)
+                        channel = await self.bot.fetch_channel(db[guild]['channel'])
+                        await channel.send(embed=embed)
             else:
                 return
         else:
