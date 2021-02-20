@@ -4,3 +4,6 @@ prefix = '$'
 
 ***REMOVED***
 ***REMOVED***
+
+***REMOVED***
+db_path = './chiichan.db'
