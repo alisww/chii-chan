@@ -221,7 +221,7 @@ async def subscribe(ctx,*,mangaid):
                 else:
                     await confirm_msg.remove_reaction(reaction, user)
             except asyncio.TimeoutError:
-                return
+                await confirm_msg.delete()
         else:
             await ctx.send('This manga is part of a genre that is blocked in this server :/')
     else:
