@@ -161,6 +161,8 @@ async def subscribe(ctx,*,mangaid):
 
     if not db[ctx.guild.id]['notify']:
         await ctx.send("This server doesn't allow for manga release notifications.")
+        return
+
     id = ''
 
     if mangaid.isdecimal():
@@ -219,8 +221,7 @@ async def subscribe(ctx,*,mangaid):
                 else:
                     await confirm_msg.remove_reaction(reaction, user)
             except asyncio.TimeoutError:
-                await ctx.send('Timed out on confirmation x.x')
-
+                return
         else:
             await ctx.send('This manga is part of a genre that is blocked in this server :/')
     else:
