@@ -7,6 +7,7 @@ import requests
 import io
 import toml
 import typing
+import statistics
 from sqlitedict import SqliteDict
 
 config = {}
@@ -25,6 +26,61 @@ if 'manga' not in db:
 #
 bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'))
 bot.remove_command("help")
+
+class Manga(commands.Converter):
+    async def convert(self, ctx, mangaid):
+        def check(reaction, user):
+            return user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
+
+        id = ''
+
+        if mangaid.isdecimal():
+            id = mangaid
+        else:
+            link_regex = re.compile(r"""mangaupdates\.com\/series\.html\?id=(\d+)""")
+            m = link_regex.search(mangaid)
+            id = m.group(1) if m else pymanga.search(mangaid)['series'][0]['id']
+
+        manga = pymanga.series(id)
+        if manga:
+            manga['id'] = id
+            if not filtered_genres & set([a.strip().lower() for a in manga['genres']]):
+                desc = f"""
+                **{manga['title']}**
+
+                {manga['description'].split(chr(10),1)[0] }
+
+                *✅ to confirm*
+                *❌ to reject*
+                """
+                embed = discord.Embed(title="Is this the manga you were looking for?", url=f"https://www.mangaupdates.com/series.html?id={id}",description=desc, color=0xf77665)
+                embed.set_image(url=manga['image'])
+
+                confirm_msg = await ctx.send(embed=embed)
+
+                await confirm_msg.add_reaction("✅")
+                await confirm_msg.add_reaction("❌")
+
+                try:
+                    reaction, user = await bot.wait_for("reaction_add", timeout=60, check=check)
+                    if reaction.emoji == "✅":
+                        await confirm_msg.delete()
+                        return manga
+                    elif reaction.emoji == "❌":
+                        await ctx.send("Aw ): Please try using the mangaupdates' link or id instead of title.")
+                        await confirm_msg.delete()
+                    else:
+                        await confirm_msg.remove_reaction(reaction, user)
+                except asyncio.TimeoutError:
+                    await confirm_msg.delete()
+            else:
+                await ctx.send('This manga is part of a genre that is blocked in this server :/')
+                await ctx.send("If you think i got the wrong manga, please try using the mangaupdates' link or id instead of title!")
+        else:
+            await ctx.send('Manga not found ):')
+
+        return None
+
 
 @bot.command()
 async def search(ctx, *, querystring):
@@ -128,9 +184,16 @@ async def search(ctx, *, querystring):
 
 @bot.command()
 async def series(ctx, *, querystring):
+    def stars(rating):
+        rounded = round(rating*2)/2
+        floored = int(rounded)
+        return ('⭐' * floored) + ('✨' if rounded > floored else '')
+
     res = pymanga.search(querystring)['series']
     if len(res) > 0:
         manga = pymanga.series(res[0]['id'])
+        id = res[0]['id']
+
         embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=manga['description'].split("[**M**ore...]")[0], color=0xf77665)
 
         embed.set_author(name=', '.join([a['name'] for a in manga['authors']]))
@@ -143,7 +206,10 @@ async def series(ctx, *, querystring):
         embed.add_field(name="Status", value=manga['status'], inline=True)
 
         if manga['average']:
-            embed.add_field(name="Rating", value=manga['average']['average'], inline=True)
+            embed.add_field(name="MangaUpdates' Rating", value=manga['average']['average'], inline=True)
+
+        if f'ratings.{id}' in db:
+            embed.add_field(name="Chii-chan's Rating", value=stars(db[f'ratings.{id}']['median']), inline=True)
 
         if manga['associated_names']:
             embed.add_field(name="Also known as",value='\n'.join(manga['associated_names']))
@@ -155,77 +221,87 @@ async def series(ctx, *, querystring):
         await ctx.send(embed=discord.Embed(title='no results ):'))
 
 @bot.command()
-async def subscribe(ctx,*,mangaid):
-    def check(reaction, user):
-        return user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
+async def subscribe(ctx,*,manga: Manga):
+    if not manga:
+        return
 
     if not db[ctx.guild.id]['notify']:
         await ctx.send("This server doesn't allow for manga release notifications.")
         return
 
-    id = ''
+    id = manga['id']
 
-    if mangaid.isdecimal():
-        id = mangaid
-    else:
-        link_regex = re.compile(r"""mangaupdates\.com\/series\.html\?id=(\d+)""")
-        m = link_regex.search(mangaid)
-        id = m.group(1) if m else pymanga.search(mangaid)['series'][0]['id']
+    manga_list = db['manga']
 
-    manga = pymanga.series(id)
-    if series:
-        if not filtered_genres & set([a.strip().lower() for a in manga['genres']]):
-            desc = f"""
-            **{manga['title']}**
+    if id not in manga_list:
+        releases = pymanga.releases(id)
+        latest = "no chapters yet" if len(releases) < 1 else releases[0]['chapter']
 
-            {manga['description'].split(chr(10),1)[0] }
+        manga_list[id] = {'title': manga['title'],'description': manga['description'],'image': manga['image'], 'latest': latest,'guilds':{}}
 
-            *✅ to confirm*
-            *❌ to reject*
-            """
-            embed = discord.Embed(title="Is this the manga you want to subscribe to?", url=f"https://www.mangaupdates.com/series.html?id={id}",description=desc, color=0xf77665)
-            embed.set_image(url=manga['image'])
+    if ctx.guild.id not in manga_list[id]['guilds']:
+        manga_list[id]['guilds'][ctx.guild.id] = []
 
-            confirm_msg = await ctx.send(embed=embed)
+    manga_list[id]['guilds'][ctx.guild.id].append(ctx.author.id)
 
-            await confirm_msg.add_reaction("✅")
-            await confirm_msg.add_reaction("❌")
+    db['manga'] = manga_list
+    db.commit()
 
-            try:
-                reaction, user = await bot.wait_for("reaction_add", timeout=60, check=check)
-                if reaction.emoji == "✅":
-                    await ctx.send(f"You'll now be pinged for new releases of {manga['title']} ^~^")
+    await ctx.send(f"You'll now be pinged for new releases of {manga['title']} ^~^")
 
-                    manga_list = db['manga']
+@bot.command()
+async def rate(ctx,*,manga: Manga):
+    number_regex = re.compile(r"""(?P<rating>[\d]+(?:\.(\d+)?)?)(?:\/(?P<base>\d+))?""") # group 'rating': matches number + optional decimal places; group 'base': matches /(integer)
+    async def convert_rating(rating):
+        m = number_regex.match(rating)
+        if m:
+            groups = m.groupdict()
+            base = int(groups['base']) if groups['base'] else 5
+            r = float(groups['rating'])
 
-                    if id not in manga_list:
-                        releases = pymanga.releases(id)
-                        latest = "no chapters yet" if len(releases) < 1 else releases[0]['chapter']
-                        manga_list[id] = {'title': manga['title'],'description': manga['description'],'image': manga['image'], 'latest': latest,'guilds':{}}
+            if r > base:
+                await ctx.send('invalid rating :/')
+                return None
 
-
-                    if ctx.guild.id not in manga_list[id]['guilds']:
-                        manga_list[id]['guilds'][ctx.guild.id] = []
-
-                    manga_list[id]['guilds'][ctx.guild.id].append(ctx.author.id)
-
-                    db['manga'] = manga_list
-                    db.commit()
-
-                    await confirm_msg.delete()
-
-                elif reaction.emoji == "❌":
-                    await ctx.send("Aw ): Please try subscribing using the mangaupdates' link or id instead of title.")
-
-                    await confirm_msg.delete()
-                else:
-                    await confirm_msg.remove_reaction(reaction, user)
-            except asyncio.TimeoutError:
-                await confirm_msg.delete()
+            return (r / base) * 5
         else:
-            await ctx.send('This manga is part of a genre that is blocked in this server :/')
-    else:
-        await ctx.send('Manga not found ):')
+            await ctx.send('invalid rating :/')
+            return None
+
+    def check(m):
+        return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id and number_regex.search(m.content) != None
+
+    question = await ctx.send("How do you rate this manga? *(ratings are 5 Point Decimal, ex. 4.3/5)*")
+
+    try:
+        msg = await bot.wait_for('message', check=check)
+        rating = await convert_rating(msg.content)
+
+        id = manga['id']
+        if f'ratings.{id}' not in db:
+            db[f'ratings.{id}'] = {'users':{}}
+
+        ratings = db[f'ratings.{id}']
+        ratings['users'][ctx.author.id] = rating
+
+        ratings['users'] = dict(sorted(ratings['users'].items(), key=lambda item: item[1]))
+        rating_vals = ratings['users'].values()
+        ratings['average'] = statistics.fmean(rating_vals)
+        ratings['median'] = statistics.median(rating_vals)
+
+        db[f'ratings.{id}'] = ratings
+        db.commit()
+
+        await ctx.send(f"rating submitted ;)")
+        await ctx.send(f"the average rating for {manga['title']} is now {ratings['average']:.1f}/5")
+
+    except asyncio.TimeoutError:
+        await question.delete()
+
+    if not manga:
+        return
+
+    #
 
 
 @bot.command(name='admin:notify->toggle')
@@ -299,11 +375,14 @@ async def help(ctx,*args):
 🔎 |        **{ctx.prefix}search [query]**
                 -> searches manga by the specified attributes and returns a scrollable results list.
 
-🗞️ |        **{ctx.prefix}subscribe [manga]**
+🗞️ |        **{ctx.prefix}subscribe [manga name | mangaupdates link]**
                 -> get pinged whenever a new chapter of a manga series comes out!
 
 ℹ️ |        **{ctx.prefix}help [command]**
                 -> shows how to use a command
+
+⭐ |        **{ctx.prefix}rate [manga name | mangaupdates link]
+                -> submit a rating for a manga!
 
 🚫 |        **{ctx.prefix}admin:help**
                 -> this command, but for our dear mods
@@ -325,6 +404,14 @@ async def help(ctx,*args):
         pings you whenever a new chapter of a manga comes out.
 
         *ex: {ctx.prefix}subscribe Still Sick*
+        *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
+        """
+    elif args[0] == "rate":
+        h = f"""
+        **{ctx.prefix}rate [manga name | mangaupdates link | mangaupdates id]**
+        submit a rating for a manga.
+
+        *ex: {ctx.prefix}rate Still Sick*
         *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
         """
     elif args[0] == "search":
