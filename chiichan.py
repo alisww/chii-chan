@@ -48,7 +48,7 @@ class Manga(commands.Converter):
                 desc = f"""
                 **{manga['title']}**
 
-                {manga['description'].split(chr(10),1)[0] }
+                {manga['description'].strip().split(chr(10),1)[0] }
 
                 *✅ to confirm*
                 *❌ to reject*
