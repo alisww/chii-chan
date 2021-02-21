@@ -251,6 +251,9 @@ async def subscribe(ctx,*,manga: Manga):
 
 @bot.command()
 async def rate(ctx,*,manga: Manga):
+    if not manga:
+        return
+
     number_regex = re.compile(r"""(?P<rating>[\d]+(?:\.(\d+)?)?)(?:\/(?P<base>\d+))?""") # group 'rating': matches number + optional decimal places; group 'base': matches /(integer)
     async def convert_rating(rating):
         m = number_regex.match(rating)
