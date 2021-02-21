@@ -194,7 +194,9 @@ async def series(ctx, *, querystring):
         manga = pymanga.series(res[0]['id'])
         id = res[0]['id']
 
-        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}", description=manga['description'].split("[**M**ore...]")[0], color=0xf77665)
+        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}",
+         description=manga['description'].strip().split("\n",1)[0],
+         color=0xf77665)
 
         embed.set_author(name=', '.join([a['name'] for a in manga['authors']]))
         embed.set_image(url=manga['image'])
@@ -206,15 +208,35 @@ async def series(ctx, *, querystring):
         embed.add_field(name="Status", value=manga['status'], inline=True)
 
         if manga['average']:
-            embed.add_field(name="MangaUpdates' Rating", value=manga['average']['average'], inline=True)
+            embed.add_field(name="MangaUpdates' Rating",
+             value=manga['average']['average'], inline=True)
 
         if f'ratings.{id}' in db:
-            embed.add_field(name="Chii-chan's Rating", value=stars(db[f'ratings.{id}']['median']), inline=True)
+            embed.add_field(name="Chii-chan's Rating",
+             value=stars(db[f'ratings.{id}']['median']), inline=True)
 
         if manga['associated_names']:
-            embed.add_field(name="Also known as",value='\n'.join(manga['associated_names']))
+            associated_names = manga['associated_names']
+            if len(associated_names) > 2:
+                associated_names = associated_names[:2] + ['...and more!']
+            embed.add_field(name="Also known as",
+            value='\n'.join(associated_names))
+
         if manga['related_series']:
-            embed.add_field(name="Related series",value='\n'.join(manga['related_series']))
+            related = manga['related_series']
+            if len(related) > 2:
+                related  = related[:2] + ['...and more!']
+
+            embed.add_field(name="Related series",
+            value='\n'.join(related))
+
+        if manga['anime_chapters']:
+            anime_chapters = manga['anime_chapters']
+            anime_chapters[0] = anime_chapters[0][0].lower() + anime_chapters[0][1:]
+            anime_chapters[1] = anime_chapters[1][0].lower() + anime_chapters[1][1:]
+            embed.add_field(name="Anime",
+            value="*This manga has an anime adaptation!*\n It " +  ' and '.join(anime_chapters),
+            inline=True)
 
         await ctx.send(embed=embed)
     else:
