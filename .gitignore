@@ -139,3 +139,4 @@ cython_debug/
 
 chiichan.db
 chiichan.toml
+chiichan_cache.db

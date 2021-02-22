@@ -10,6 +10,7 @@ import toml
 import typing
 import traceback
 import statistics
+import sys
 from sqlitedict import SqliteDict
 
 config = {}
@@ -18,36 +19,84 @@ with open("chiichan.toml") as f:
 
 filtered_genres = set([g.lower() for g in config.get('filtering',{}).get('exclude_genres',[])])
 
-db = SqliteDict(config.get('internal',{}).get('db_path','./chiichan.db'))
+internal = config.get('internal',{})
+
+db = SqliteDict(internal.get('db_path','./chiichan.db'))
+
+caching = internal.get('caching',False)
+caching_interval = internal.get('caching_interval',6) # TODO: implement this
+
+cache = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache')
+cache_by_name = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache_by_name')
 
 # first init stuff
 if 'manga' not in db:
     db['manga'] = {}
     db.commit()
 
-#
-
 intents = discord.Intents(reactions=True,messages=True)
 bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'),intents=intents)
 bot.remove_command("help")
 
+
+def fetch_cached(id):
+    if caching:
+        if id in cache:
+            return cache[id]
+        else:
+            manga = pymanga.series(id)
+            manga['id'] = id
+            cache[id] = manga
+
+            cache_by_name[manga['title']] = id
+            for name in manga['associated_names']:
+                cache_by_name[name] = id
+
+            cache.commit()
+            cache_by_name.commit()
+            return manga
+    else:
+        manga = pymanga.series(id)
+        manga['id'] = id
+        return manga
+
+def cached_by_name(name):
+    if caching:
+        if name in cache_by_name:
+            return fetch_cached(cache_by_name[name])
+        else:
+            id = pymanga.search(name)['series'][0]['id']
+            manga = pymanga.series(id)
+            cache_by_name[manga['title']] = id
+
+            for name in manga['associated_names']:
+                cache_by_name[name] = id
+
+                cache.commit()
+                cache_by_name.commit()
+
+                return fetch_cached(id)
+    else:
+        id = pymanga.search(name)['series'][0]['id']
+        manga = pymanga.series(id)
+        manga['id'] = id
+        return manga
+
 class Manga(commands.Converter):
     async def convert(self, ctx, mangaid):
-        def check(reaction):
-            return
-
-        id = ''
+        manga = None
 
         if mangaid.isdecimal():
-            id = mangaid
+            manga = fetch_cached(id)
         else:
             link_regex = re.compile(r"""mangaupdates\.com\/series\.html\?id=(\d+)""")
             m = link_regex.search(mangaid)
-            id = m.group(1) if m else pymanga.search(mangaid)['series'][0]['id']
+            if m:
+                manga = fetch_cached(m.group(1))
+            else:
+                manga = cached_by_name(mangaid)
 
-        manga = pymanga.series(id)
         if manga:
-            manga['id'] = id
             if not filtered_genres & set([a.strip().lower() for a in manga['genres']]):
                 desc = f"""
                 **{manga['title']}**
@@ -57,7 +106,7 @@ class Manga(commands.Converter):
                 *✅ to confirm*
                 *❌ to reject*
                 """
-                embed = discord.Embed(title="Is this the manga you were looking for?", url=f"https://www.mangaupdates.com/series.html?id={id}",description=desc, color=0xf77665)
+                embed = discord.Embed(title="Is this the manga you were looking for?", url=f"https://www.mangaupdates.com/series.html?id={manga['id']}",description=desc, color=0xf77665)
                 embed.set_image(url=manga['image'])
 
                 confirm_msg = await ctx.send(embed=embed)
@@ -86,9 +135,9 @@ class Manga(commands.Converter):
         return None
 
 @bot.listen()
-async def on_command_error(ctx,error):
-    traceback.print_exc()
-    if isinstance(error, commands.errors.MissingRequiredArgument):
+async def on_command_error(ctx,exception):
+    traceback.print_exception(type(exception), exception, exception.__traceback__, file=sys.stderr)
+    if isinstance(exception, commands.errors.MissingRequiredArgument):
         await ctx.send('Please specify a manga :c')
 
 
@@ -199,12 +248,9 @@ async def series(ctx, *, querystring):
         floored = int(rounded)
         return ('⭐' * floored) + ('✨' if rounded > floored else '')
 
-    res = pymanga.search(querystring)['series']
-    if len(res) > 0:
-        manga = pymanga.series(res[0]['id'])
-        id = res[0]['id']
-
-        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={res[0]['id']}",
+    manga = cached_by_name(querystring)
+    if manga:
+        embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={manga['id']}",
          description=manga['description'].strip().split("\n",1)[0],
          color=0xf77665)
 
@@ -246,9 +292,9 @@ async def series(ctx, *, querystring):
             embed.add_field(name="MangaUpdates' Rating",
              value=manga['average']['average'], inline=True)
 
-        if f'ratings.{id}' in db:
+        if f'ratings.{id}' in db and db[f'ratings.{id}'] != {}:
             embed.add_field(name="Chii-chan's Rating",
-             value=stars(db[f'ratings.{id}']['median']), inline=True)
+             value=stars(db[f'ratings.{id}']['average']), inline=True)
 
         await ctx.send(embed=embed)
     else:
