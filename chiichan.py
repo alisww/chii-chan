@@ -160,6 +160,11 @@ async def search(ctx, *, querystring):
         else:
             params[field] = param[0]
 
+    if 'name' not in params and 'title' in params:
+        params['name'] = params['title']
+
+    if 'name' not in params and 'orderby' not in params:
+        params['orderby'] = rating
 
     def result_to_embed(res):
         embed = discord.Embed(
@@ -255,7 +260,7 @@ async def series(ctx, *, querystring):
     manga = await cached_by_name(querystring)
     if manga:
         id = manga['id']
-        
+
         embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={manga['id']}",
          description=manga['description'].strip().split("\n",1)[0],
          color=0xf77665)
