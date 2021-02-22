@@ -1,4 +1,5 @@
 from discord.ext import commands, tasks
+from discord import ChannelType
 import discord
 import asyncio
 import re
@@ -7,6 +8,7 @@ import requests
 import io
 import toml
 import typing
+import traceback
 import statistics
 from sqlitedict import SqliteDict
 
@@ -24,13 +26,15 @@ if 'manga' not in db:
     db.commit()
 
 #
-bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'))
+
+intents = discord.Intents(reactions=True,messages=True)
+bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'),intents=intents)
 bot.remove_command("help")
 
 class Manga(commands.Converter):
     async def convert(self, ctx, mangaid):
-        def check(reaction, user):
-            return user == ctx.author and str(reaction.emoji) in ["✅", "❌"]
+        def check(reaction):
+            return
 
         id = ''
 
@@ -62,11 +66,11 @@ class Manga(commands.Converter):
                 await confirm_msg.add_reaction("❌")
 
                 try:
-                    reaction, user = await bot.wait_for("reaction_add", timeout=60, check=check)
-                    if reaction.emoji == "✅":
+                    reaction = await bot.wait_for("raw_reaction_add", timeout=60, check=lambda reaction: reaction.message_id == confirm_msg.id and reaction.user_id == ctx.author.id and str(reaction.emoji) in ["✅", "❌"])
+                    if reaction.emoji.name == "✅":
                         await confirm_msg.delete()
                         return manga
-                    elif reaction.emoji == "❌":
+                    elif reaction.emoji.name == "❌":
                         await ctx.send("Aw ): Please try using the mangaupdates' link or id instead of title.")
                         await confirm_msg.delete()
                     else:
@@ -80,6 +84,12 @@ class Manga(commands.Converter):
             await ctx.send('Manga not found ):')
 
         return None
+
+@bot.listen()
+async def on_command_error(ctx,error):
+    traceback.print_exc()
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send('Please specify a manga :c')
 
 
 @bot.command()
@@ -328,8 +338,57 @@ async def rate(ctx,*,manga: Manga):
     if not manga:
         return
 
-    #
+@bot.group()
+async def tw(ctx):
+    if ctx.invoked_subcommand is None:
+        await ctx.send('please specify a tw subcommand!')
 
+@tw.command(name="show")
+async def get_triggers(ctx,*,manga: Manga):
+    if not manga:
+        return
+
+    id = manga['id']
+    if not db.get(f'triggers.{id}',{}):
+        await ctx.send("No one has added trigger warnings for this manga yet.")
+        return
+
+    triggers = db[f'triggers.{id}']
+    await ctx.send("people have added the following trigger warnings for this manga:")
+
+    msg = "||"
+    for t,users in triggers.items():
+        msg += f"{t} *({len(users)} {'user' if len(users) == 1 else 'users'})*" + '\n'
+    msg += "||"
+    await ctx.send(msg)
+
+@tw.command(name="add")
+async def add_triggers(ctx,*,manga: typing.Optional[Manga]):
+    if not manga:
+        return
+
+    id = manga['id']
+    if f'triggers.{id}' not in db:
+        db[f'triggers.{id}'] = {}
+
+    warnings = db[f'triggers.{id}']
+    question = await ctx.send("What trigger warnings would you like to add to this manga? (*separate multiple warnings using ';'.*)\n*p.s: please spoiler your message if you're in a server!*")
+
+    try:
+        msg = await bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
+        for trigger in (warning.strip() for warning in msg.content.replace('||','').split(';')):
+            print(trigger)
+            if trigger not in warnings:
+                warnings[trigger] = set()
+
+            warnings[trigger].add(ctx.author.id)
+        await msg.delete()
+    except asyncio.TimeoutError:
+        await question.delete()
+
+    db[f'triggers.{id}'] = warnings
+    db.commit()
+    await ctx.send("trigger warnings added to database. thank you for submitting them :)")
 
 @bot.command(name='admin:notify->toggle')
 async def toggle_notify(ctx,on: typing.Optional[bool] = None):
@@ -405,11 +464,17 @@ async def help(ctx,*args):
 🗞️ |        **{ctx.prefix}subscribe [manga name | mangaupdates link]**
                 -> get pinged whenever a new chapter of a manga series comes out!
 
+⭐ |        **{ctx.prefix}rate [manga name | mangaupdates link]**
+                -> submit a rating for a manga!
+
+⚠️ |        **{ctx.prefix}tw show [manga name | mangaupdates link]**
+                -> see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
+
+⚠️ |        **{ctx.prefix}tw add [manga name | mangaupdates link]**
+                -> submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
+
 ℹ️ |        **{ctx.prefix}help [command]**
                 -> shows how to use a command
-
-⭐ |        **{ctx.prefix}rate [manga name | mangaupdates link]
-                -> submit a rating for a manga!
 
 🚫 |        **{ctx.prefix}admin:help**
                 -> this command, but for our dear mods
@@ -433,6 +498,20 @@ async def help(ctx,*args):
         *ex: {ctx.prefix}subscribe Still Sick*
         *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
         """
+    elif 'tw' in args[0]:
+        h = f"""
+        **{ctx.prefix}tw:show [manga name | mangaupdates link]**
+        see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
+
+        **{ctx.prefix}tw:add [manga name | mangaupdates link]**
+        submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
+
+        *ex: {ctx.prefix}tw show Still Sick*
+        *or: {ctx.prefix}tw show https://www.mangaupdates.com/series.html?id=148031*
+
+        *ex: {ctx.prefix}tw add Still Sick*
+        *or: {ctx.prefix}tw add https://www.mangaupdates.com/series.html?id=148031*
+        """
     elif args[0] == "rate":
         h = f"""
         **{ctx.prefix}rate [manga name | mangaupdates link | mangaupdates id]**
@@ -442,7 +521,6 @@ async def help(ctx,*args):
         *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
         """
     elif args[0] == "search":
-        genre_list = ['Action','A']
         h = f"""
         **{ctx.prefix}search [query]**
         searches manga by the specified attributes and returns a scrollable results list.
