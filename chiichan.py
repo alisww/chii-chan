@@ -276,8 +276,10 @@ async def series(ctx, *, querystring):
             if len(related) > 2:
                 related  = related[:2] + ['...and more!']
 
+            related = '\n'.join([f"[{r_s['name']} *({r_s['relation']})*](https://www.mangaupdates.com/series.html?id={r_s['id']})" for r_s in related])
+
             embed.add_field(name="Related series",
-            value='\n'.join(related),
+            value=related,
             inline=False)
 
         if manga['anime_chapters']:
