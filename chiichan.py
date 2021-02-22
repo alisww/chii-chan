@@ -1,17 +1,9 @@
 from discord.ext import commands, tasks
 from discord import ChannelType
-import discord
-import asyncio
-import re
-import pymanga
-import requests
-import io
-import toml
-import typing
-import traceback
-import statistics
-import sys
 from sqlitedict import SqliteDict
+import discord, requests, toml, pymanga
+import re, asyncio, io, typing, traceback, sys, statistics, json
+import pymanga
 
 config = {}
 with open("chiichan.toml") as f:
@@ -21,13 +13,17 @@ filtered_genres = set([g.lower() for g in config.get('filtering',{}).get('exclud
 
 internal = config.get('internal',{})
 
-db = SqliteDict(internal.get('db_path','./chiichan.db'))
+
+db = SqliteDict(internal.get('db_path','./chiichan.db'),encode=json.dumps,decode=json.loads)
 
 caching = internal.get('caching',False)
 caching_interval = internal.get('caching_interval',6) # TODO: implement this
 
-cache = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache')
-cache_by_name = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache_by_name')
+cache = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache',encode=json.dumps,decode=json.loads)
+cache_by_name = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache_by_name',encode=json.dumps,decode=json.loads)
+
+cache_lock = asyncio.Lock()
+namecache_lock = asyncio.Lock()
 
 # first init stuff
 if 'manga' not in db:
@@ -39,43 +35,46 @@ bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'),intents=in
 bot.remove_command("help")
 
 
-def fetch_cached(id):
+async def fetch_cached(id):
     if caching:
         if id in cache:
             return cache[id]
         else:
             manga = pymanga.series(id)
             manga['id'] = id
-            cache[id] = manga
 
-            cache_by_name[manga['title']] = id
-            for name in manga['associated_names']:
-                cache_by_name[name] = id
+            async with cache_lock:
+                cache[id] = manga
+                cache.commit()
 
-            cache.commit()
-            cache_by_name.commit()
+            async with namecache_lock:
+                cache_by_name[manga['title']] = id
+                for name in manga['associated_names']:
+                    cache_by_name[name] = id
+
+                cache_by_name.commit()
             return manga
     else:
         manga = pymanga.series(id)
         manga['id'] = id
         return manga
 
-def cached_by_name(name):
+async def cached_by_name(name):
     if caching:
         if name in cache_by_name:
-            return fetch_cached(cache_by_name[name])
+            return await fetch_cached(cache_by_name[name])
         else:
             id = pymanga.search(name)['series'][0]['id']
             manga = pymanga.series(id)
-            cache_by_name[manga['title']] = id
 
-            for name in manga['associated_names']:
-                cache_by_name[name] = id
+            async with namecache_lock:
+                cache_by_name[manga['title']] = id
 
-                cache.commit()
-                cache_by_name.commit()
+                for name in manga['associated_names']:
+                    cache_by_name[name] = id
+                    cache_by_name.commit()
 
-                return fetch_cached(id)
+            return await fetch_cached(id)
     else:
         id = pymanga.search(name)['series'][0]['id']
         manga = pymanga.series(id)
@@ -87,14 +86,14 @@ class Manga(commands.Converter):
         manga = None
 
         if mangaid.isdecimal():
-            manga = fetch_cached(id)
+            manga = await fetch_cached(id)
         else:
             link_regex = re.compile(r"""mangaupdates\.com\/series\.html\?id=(\d+)""")
             m = link_regex.search(mangaid)
             if m:
-                manga = fetch_cached(m.group(1))
+                manga = await fetch_cached(m.group(1))
             else:
-                manga = cached_by_name(mangaid)
+                manga = await cached_by_name(mangaid)
 
         if manga:
             if not filtered_genres & set([a.strip().lower() for a in manga['genres']]):
@@ -160,6 +159,9 @@ async def search(ctx, *, querystring):
                 params[field] = params[field] + param
         else:
             params[field] = param[0]
+
+    if 'orderby' not in params:
+        params['orderby'] = 'rating'
 
     def result_to_embed(res):
         embed = discord.Embed(
@@ -248,7 +250,7 @@ async def series(ctx, *, querystring):
         floored = int(rounded)
         return ('⭐' * floored) + ('✨' if rounded > floored else '')
 
-    manga = cached_by_name(querystring)
+    manga = await cached_by_name(querystring)
     if manga:
         embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={manga['id']}",
          description=manga['description'].strip().split("\n",1)[0],
@@ -426,10 +428,13 @@ async def add_triggers(ctx,*,manga: typing.Optional[Manga]):
         msg = await bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
         for trigger in (warning.strip() for warning in msg.content.replace('||','').split(';')):
             if trigger not in warnings:
-                warnings[trigger] = set()
+                warnings[trigger] = []
 
-            warnings[trigger].add(ctx.author.id)
-        if msg.channel.type != ChannelType.private and msg.channel.type != ChannelType.group:
+            if ctx.author.id not in warnings[trigger]:
+                warnings[trigger].append(ctx.author.id)
+
+        channel = await bot.fetch_channel(msg.channel.id)
+        if channel.type != ChannelType.private and channel.type != ChannelType.group:
             await msg.delete()
     except asyncio.TimeoutError:
         await question.delete()
