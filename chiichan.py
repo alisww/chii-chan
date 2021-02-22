@@ -160,8 +160,6 @@ async def search(ctx, *, querystring):
         else:
             params[field] = param[0]
 
-    if 'orderby' not in params:
-        params['orderby'] = 'rating'
 
     def result_to_embed(res):
         embed = discord.Embed(
@@ -181,6 +179,10 @@ async def search(ctx, *, querystring):
             embed.add_field(name="Rating", value=res['rating'], inline=True)
 
         embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
+
+        if f"triggers.{res['id']}" in db:
+            triggers = '; '.join(db[f"triggers.{res['id']}"].keys())
+            embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
 
         return embed
 
@@ -252,6 +254,8 @@ async def series(ctx, *, querystring):
 
     manga = await cached_by_name(querystring)
     if manga:
+        id = manga['id']
+        
         embed = discord.Embed(title=manga['title'], url=f"https://www.mangaupdates.com/series.html?id={manga['id']}",
          description=manga['description'].strip().split("\n",1)[0],
          color=0xf77665)
@@ -299,6 +303,11 @@ async def series(ctx, *, querystring):
         if f'ratings.{id}' in db and db[f'ratings.{id}'] != {}:
             embed.add_field(name="Chii-chan's Rating",
              value=stars(db[f'ratings.{id}']['average']), inline=True)
+
+        if f"triggers.{id}" in db:
+            triggers = '; '.join(db[f"triggers.{id}"].keys())
+            embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
+
 
         await ctx.send(embed=embed)
     else:
