@@ -377,12 +377,12 @@ async def add_triggers(ctx,*,manga: typing.Optional[Manga]):
     try:
         msg = await bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
         for trigger in (warning.strip() for warning in msg.content.replace('||','').split(';')):
-            print(trigger)
             if trigger not in warnings:
                 warnings[trigger] = set()
 
             warnings[trigger].add(ctx.author.id)
-        await msg.delete()
+        if msg.channel.type != ChannelType.private and msg.channel.type != ChannelType.group:
+            await msg.delete()
     except asyncio.TimeoutError:
         await question.delete()
 
