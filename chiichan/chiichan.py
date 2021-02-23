@@ -1,12 +1,13 @@
 from discord.ext import commands, tasks
 from discord import ChannelType
-from sqlitedict import SqliteDict
 import discord, requests, toml, pymanga
-import re, asyncio, io, typing, traceback, sys, statistics, json
-import pymanga
+
+import re, asyncio, io, typing, traceback, sys, statistics, json, os, os.path
+
 from clockwork import *
 from clockwork.scrolling import *
 from clockwork.utils import *
+import help
 
 config = {}
 with open("chiichan.toml") as f:
@@ -18,9 +19,18 @@ config['internal'] = config.get('internal',{})
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'),intents=intents)
 bot.remove_command("help")
+
 bot.config = config
 bot.config['filtered_genres'] = set([g.lower() for g in config.get('filtering',{}).get('exclude_genres',[])])
 filtered_genres = bot.config['filtered_genres']
+
+bot.help_descs = {}
+help_dir = os.path.dirname(help.__file__)
+for help_file in os.listdir(path=help_dir):
+    one, two = os.path.splitext(help_file)
+    if two == '.md':
+        with open(os.path.join(help_dir,help_file)) as f:
+            bot.help_descs[one] = f.read()
 
 class Manga(commands.Converter):
     async def convert(self, ctx, mangaid):
@@ -76,6 +86,19 @@ class Manga(commands.Converter):
 
         return None
 
+@bot.command()
+async def help(ctx,*args):
+    h = ""
+    if len(args) > 0:
+        if args[0].strip().lower() in bot.help_descs:
+            h = bot.help_descs[args[0]]
+        else:
+            await ctx.send("Couldn't find a help message for this command ):")
+    else:
+        h = bot.help_descs['general']
+    embed=discord.Embed(description=h.format(ctx=ctx), color=0xf77665)
+    await ctx.send(embed=embed)
+
 @bot.listen('on_ready')
 async def load_dbs():
     await bot.get_cog('DatabaseCog').load_db()
@@ -89,39 +112,10 @@ async def before_invoke_loads(ctx):
 @bot.listen()
 async def on_command_error(ctx,exception):
     traceback.print_exception(type(exception), exception, exception.__traceback__, file=sys.stderr)
-    if isinstance(exception, commands.errors.MissingRequiredArgument):
-        if ctx.invoked_with == "lists":
-            await ctx.send('Invalid usage of command :/')
-            h = f"""Usage:
-**{ctx.prefix}lists [user]**
-shows [user]'s lists
-
-**{ctx.prefix}lists [user] [list name]**
-shows a [user]'s list.
-
-**{ctx.prefix}lists add [list name]**
-adds a manga to [list name]. creates list if it doesn't exist yet
-            """
-            await ctx.send(h)
-        elif invoked_command == "tw":
-            await ctx.send('Invalid usage of command :/')
-            h = f"""
-            **{ctx.prefix}tw show [manga name | mangaupdates link]**
-            see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
-
-            **{ctx.prefix}tw add [manga name | mangaupdates link]**
-            submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
-
-            *ex: {ctx.prefix}tw show Still Sick*
-            *or: {ctx.prefix}tw show https://www.mangaupdates.com/series.html?id=148031*
-
-            *ex: {ctx.prefix}tw add Still Sick*
-            *or: {ctx.prefix}tw add https://www.mangaupdates.com/series.html?id=148031*
-            """
-            await ctx.send(h)
-        else:
-            await ctx.send('Please specify a manga :c')
-
+    if isinstance(exception, commands.errors.MissingRequiredArgument) or isinstance(exception,commands.errors.BadUnionArgument):
+        await ctx.send('Invalid usage of command :/')
+        embed=discord.Embed(description=bot.help_descs['general'].format(ctx=ctx), color=0xf77665)
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def search(ctx, *, querystring):
@@ -264,173 +258,28 @@ async def rate(ctx,*,manga: Manga):
 
     if not manga:
         return
+#
+# @bot.command()
+# async def changelog(ctx):
+#     h = f"""
+#     we have lists now. so you can share you favourites, your recommendations and your 'never read this; my eyes are bleeding!' series.
+#
+#     🔖 |        **{ctx.prefix}lists [user]**
+#                     -> shows [user]'s lists
+#                     *(users may be a nickname, a username, or username#tag)*
+#
+#     🔖 |        **{ctx.prefix}lists [user] [list name]**
+#                     -> shows a [user]'s list.
+#                     *(users may be a nickname, a username, or username#tag)*
+#
+#     🔖 |        **{ctx.prefix}lists add [list name]**
+#                     -> adds a manga to [list name]. creates list if it doesn't exist yet
+#     """
+#     embed=discord.Embed(title="The Lists Update",description=h, color=0xf77665)
+#     await ctx.send(embed=embed)
 
-@bot.command()
-async def help(ctx,*args):
-    h = ""
-    if len(args) < 1:
-        h = f"""
-        **Available Commands**
-
-📚 |        **{ctx.prefix}series [manga name]**
-                -> get details for manga series in a neat embed
-
-🔎 |        **{ctx.prefix}search [query]**
-                -> searches manga by the specified attributes and returns a scrollable results list.
-
-🗞️ |        **{ctx.prefix}subscribe [manga name | mangaupdates link]**
-                -> get pinged whenever a new chapter of a manga series comes out!
-
-⭐ |        **{ctx.prefix}rate [manga name | mangaupdates link]**
-                -> submit a rating for a manga!
-
-🔖 |        **{ctx.prefix}lists [user]**
-                -> shows [user]'s lists
-                *(users may be a nickname, a username, or username#tag)*
-
-🔖 |        **{ctx.prefix}lists [user] [list name]**
-                -> shows a [user]'s list.
-                *(users may be a nickname, a username, or username#tag)*
-
-🔖 |        **{ctx.prefix}lists add [list name]**
-                -> adds a manga to [list name]. creates list if it doesn't exist yet
-
-⚠️ |        **{ctx.prefix}tw show [manga name | mangaupdates link]**
-                -> see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
-
-⚠️ |        **{ctx.prefix}tw add [manga name | mangaupdates link]**
-                -> submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
-
-ℹ️ |        **{ctx.prefix}help [command]**
-                -> shows how to use a command
-
-🚫 |        **{ctx.prefix}admin:help**
-                -> this command, but for our dear mods
-
-        *made by allie (at sapphicfettucine#6248 or on [cat-girl.gay](https://cat-girl.gay))*
-        *using [mangaupdates.com](https://mangaupdates.com)*
-        *source code on [github.com/alisww/chii-chan](https://github.com/alisww/chii-chan)*
-        *profile picture and name borrowed from Girl's Last Tour*
-        """
-    elif args[0] == "series":
-        h = f"""
-        **{ctx.prefix}series [manga name]**
-        searches manga by the specified name and returns the top result in a neat embed.
-        *ex: {ctx.prefix}series Still Sick*
-        """
-    elif args[0] == "subscribe":
-        h = f"""
-        **{ctx.prefix}subscribe [manga name | mangaupdates link | mangaupdates id]**
-        pings you whenever a new chapter of a manga comes out.
-
-        *ex: {ctx.prefix}subscribe Still Sick*
-        *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
-        """
-    elif 'lists' in args[0]:
-        h = f"""
-        🔖 |        **{ctx.prefix}lists [user]**
-                        -> shows [user]'s lists
-                        *(users may be a nickname, a username, or username#tag)*
-
-        🔖 |        **{ctx.prefix}lists [user] [list name]**
-                        -> shows a [user]'s list.
-                        *(users may be a nickname, a username, or username#tag)*
-
-        🔖 |        **{ctx.prefix}lists add [list name]**
-                        -> adds a manga to [list name]. creates list if it doesn't exist yet
-        """
-    elif 'tw' in args[0]:
-        h = f"""
-⚠️ |     **{ctx.prefix}tw show [manga name | mangaupdates link]**
-        see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
-
-⚠️ |     **{ctx.prefix}tw add [manga name | mangaupdates link]**
-        submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
-
-        *ex: {ctx.prefix}tw show Still Sick*
-        *or: {ctx.prefix}tw show https://www.mangaupdates.com/series.html?id=148031*
-
-        *ex: {ctx.prefix}tw add Still Sick*
-        *or: {ctx.prefix}tw add https://www.mangaupdates.com/series.html?id=148031*
-        """
-    elif args[0] == "rate":
-        h = f"""
-        **{ctx.prefix}rate [manga name | mangaupdates link | mangaupdates id]**
-        submit a rating for a manga.
-
-        *ex: {ctx.prefix}rate Still Sick*
-        *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
-        """
-    elif args[0] == "search":
-        h = f"""
-        **{ctx.prefix}search [query]**
-        searches manga by the specified attributes and returns a scrollable results list.
-        *ex: {ctx.prefix}search orderby:rating genre:'Yuri, Shoujo Ai' exclude_genre:'Tragedy'*
-
-        **Available Search Attributes**
-        *orderby* -> 'title', 'rating' or 'year'; determines how the results are sorted
-        *name* -> search by the manga name
-        *category* -> categories to search in. [find a list of categories here](https://www.mangaupdates.com/categories.html)
-        *genre* -> genres to search in
-        *exclude_genre* -> genres to exclude in search results
-
-        **Available Genres**
-          - Action
-          - Adult
-          - Adventure
-          - Comedy
-          - Doujinshi
-          - Drama
-          - Ecchi
-          - Fantasy
-          - Gender Bender
-          - Harem
-          - Historical
-          - Horror
-          - Josei
-          - Martial Arts
-          - Mature
-          - Mecha
-          - Mystery
-          - Psychological
-          - Romance
-          - School Life
-          - Sci-fi
-          - Seinen
-          - Shoujo
-          - Shoujo Ai
-          - Shounen
-          - Shounen Ai
-          - Slice of Life
-          - Sports
-          - Supernatural
-          - Tragedy
-          - Yaoi
-          - Yuri
-        """
-
-    embed=discord.Embed(description=h, color=0xf77665)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def changelog(ctx):
-    h = f"""
-    we have lists now. so you can share you favourites, your recommendations and your 'never read this; my eyes are bleeding!' series.
-
-    🔖 |        **{ctx.prefix}lists [user]**
-                    -> shows [user]'s lists
-                    *(users may be a nickname, a username, or username#tag)*
-
-    🔖 |        **{ctx.prefix}lists [user] [list name]**
-                    -> shows a [user]'s list.
-                    *(users may be a nickname, a username, or username#tag)*
-
-    🔖 |        **{ctx.prefix}lists add [list name]**
-                    -> adds a manga to [list name]. creates list if it doesn't exist yet
-    """
-    embed=discord.Embed(title="The Lists Update",description=h, color=0xf77665)
-    await ctx.send(embed=embed)
-
+#
+#
 bot.load_extension('clockwork.cache')
 bot.load_extension('clockwork.db')
 bot.load_extension('clockwork.tws')

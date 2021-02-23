@@ -35,22 +35,7 @@ class AdminCog(commands.Cog):
     @admin.command(name='help')
     async def adm_help(self,ctx,*args):
         if ctx.author.permissions_in(ctx.message.channel).administrator:
-            h = f"""
-    **Available Commands**
-    ```make
-    {ctx.prefix}admin notify toggle [on|off]
-        -> disables or enables manga release notifications in this server
-
-    {ctx.prefix}admin notify channel [#channel]
-        -> sets channel where release notifications will apear
-
-    {ctx.prefix}admin help
-        -> this command!
-    ```
-    *if you need any help or have any issues, dm allie at sapphicfettucine#6248!*
-    """
-
-            await ctx.send(h)
+            await ctx.send(embed=discord.Embed(description=self.bot.help_descs['admin'].format(ctx=ctx), color=0xf77665))
         else:
             await ctx.send('only admins may use this command >.>')
 

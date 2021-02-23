@@ -58,9 +58,8 @@ class NotifierCog(commands.Cog):
                 cached_latest = ""
 
                 cached_latest = await self.db.get_latest(id)
-
                 if latest != cached_latest: # new chapter!
-                    await self.db.set_latest(id,latest)
+                    await self.db.set_latest(int(id),latest)
 
                     for guild,users in guilds.items():
                         guild_settings = await self.db.get_guild(guild)

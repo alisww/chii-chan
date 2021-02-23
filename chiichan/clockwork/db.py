@@ -93,11 +93,16 @@ class DatabaseCog(commands.Cog):
     # (UNIQUE INTEGER 'manga', TEXT 'latest')
     async def get_latest(self,manga: int):
         cursor = await self.db.execute('SELECT * FROM latest_release WHERE manga = ? ',[manga])
-        return await cursor.fetchone()
+        return (await cursor.fetchone())[1]
 
     async def set_latest(self,manga: int,latest: str):
-        await self.db.execute('INSERT OR REPLACE into latest_release (manga,latest) VALUES (?,?)',[manga,latest])
+        cursor = await self.db.execute('SELECT * FROM latest_release WHERE manga= ?',[manga])
+        if await cursor.fetchone():
+            await self.db.execute('UPDATE latest_release SET latest = ? WHERE manga = ?',[latest,manga])
+        else:
+            await self.db.execute('INSERT INTO latest_release (manga,latest) VALUES (?,?)',[manga,latest])
         await self.db.commit()
+
     # Guilds
     # (UNIQUE INTEGER 'guild', BOOL 'notify', INTEGER 'notify_channel')
     async def get_guild(self,guildid: int):
@@ -148,6 +153,17 @@ class DatabaseCog(commands.Cog):
 
         if row:
             return json.loads(row['items'].decode('utf-8'))
+        else:
+            return None
+
+    async def delete_list(self, user: int, list: str):
+        cursor = await self.db.execute('SELECT * FROM lists WHERE user = ? AND list = ?',[user,list])
+        row = await cursor.fetchone()
+
+        if row:
+            await self.db.execute('DELETE FROM lists WHERE user = ? AND list = ?',[user,list])
+            await self.db.commit()
+            await cursor.close()
         else:
             return None
 

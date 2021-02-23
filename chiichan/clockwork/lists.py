@@ -45,7 +45,6 @@ class ListCog(commands.Cog):
 
         if not list:
             lists = await ctx.db.get_lists(user.id)
-            print(lists)
             if not lists:
                 await ctx.send(f'{user.display_name} has no lists ):')
             else:
@@ -75,6 +74,30 @@ class ListCog(commands.Cog):
         await ctx.db.add_to_list(ctx.author.id,list,manga['id'])
 
         await ctx.send(f"Added {manga['title']} to your list {list} ^^")
+
+    @listsg.command(name='delete')
+    async def delete_list(self,ctx,*,list):
+        list = list.replace('\n','')
+
+        if not await ctx.db.get_list(ctx.author.id,list):
+            await ctx.send(f"you don't have a list named {list}, so i can't delete it.")
+            return
+
+        await ctx.send(f"Are you sure you want to delete your list {list}?")
+        await ctx.send("*send 'yes' to confirm*\n *or 'no' to cancel*")
+
+        msg = await self.bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
+        lowered = msg.content.strip().lower()
+        if lowered in ('yes', 'y', 'true', 't', '1', 'enable', 'on'):
+            await ctx.send(f"alright! {list} is gone 🦀")
+            await ctx.db.delete_list(ctx.author.id,list)
+        elif lowered in ('no', 'n', 'false', 'f', '0', 'disable', 'off'):
+            await ctx.send('canceled!')
+
+    @listsg.command(name='help')
+    async def help(self,ctx,*args):
+        await ctx.send(embed=discord.Embed(description=self.bot.help_descs['lists'].format(ctx=ctx), color=0xf77665))
+
 
 def setup(bot):
     bot.add_cog(ListCog(bot))
