@@ -189,9 +189,9 @@ def gen_search_embed(res):
     if res.get('rating',False):
         embed.add_field(name="Rating", value=res['rating'], inline=True)
 
-    if id in ratingsdb:
+    if res['id'] in ratingsdb:
         embed.add_field(name="Chii-chan's Rating",
-         value=stars(ratingsdb[id]['average']), inline=True)
+         value=stars(ratingsdb[res['id']]['average']), inline=True)
 
     embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
 
@@ -385,6 +385,10 @@ async def series(ctx, *, querystring):
             embed.add_field(name="MangaUpdates' Rating",
              value=manga['average']['average'], inline=True)
 
+        if manga['id'] in ratingsdb:
+            embed.add_field(name="Chii-chan's Rating",
+             value=stars(ratingsdb[manga['id']]['average']), inline=True)
+
         if id in triggersdb:
             triggers = '; '.join(triggersdb[id].keys())
             embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
@@ -567,6 +571,10 @@ async def listsg(ctx,user: typing.Union[discord.Member,discord.User],*,list=None
 
         if res.get('average',{}).get('average',False):
             embed.add_field(name="MangaUpdates' Rating", value=res['average']['average'], inline=True)
+
+        if res['id'] in ratingsdb:
+            embed.add_field(name="Chii-chan's Rating",
+             value=stars(ratingsdb[res['id']]['average']), inline=True)
 
         embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
 
