@@ -109,13 +109,19 @@ async def before_invoke_loads(ctx):
     ctx.db = bot.get_cog('DatabaseCog')
     ctx.cache = bot.get_cog('cache')
 
+
 @bot.listen()
 async def on_command_error(ctx,exception):
     traceback.print_exception(type(exception), exception, exception.__traceback__, file=sys.stderr)
-    if isinstance(exception, commands.errors.MissingRequiredArgument) or isinstance(exception,commands.errors.BadUnionArgument):
+    if isinstance(exception, commands.errors.MissingRequiredArgument):
         await ctx.send('Invalid usage of command :/')
-        embed=discord.Embed(description=bot.help_descs['general'].format(ctx=ctx), color=0xf77665)
-        await ctx.send(embed=embed)
+        if ctx.command.name in bot.help_descs:
+            await ctx.send(embed=discord.Embed(description=bot.help_descs[ctx.command.name].format(ctx=ctx), color=0xf77665))
+        else:
+            embed=discord.Embed(description=bot.help_descs['general'].format(ctx=ctx), color=0xf77665)
+            await ctx.send(embed=embed)
+    elif isinstance(exception,commands.errors.BadUnionArgument):
+        await ctx.send("Couldn't find that discord user ):") # hacky, TODO: fix
 
 @bot.command()
 async def search(ctx, *, querystring):
