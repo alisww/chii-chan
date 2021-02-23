@@ -13,14 +13,23 @@ filtered_genres = set([g.lower() for g in config.get('filtering',{}).get('exclud
 
 internal = config.get('internal',{})
 
-
 db = SqliteDict(internal.get('db_path','./chiichan.db'),encode=json.dumps,decode=json.loads)
+# TODO: Add lock for db; move things like ratings to their own tables.
 
 caching = internal.get('caching',False)
 caching_interval = internal.get('caching_interval',6) # TODO: implement this
 
 cache = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache',encode=json.dumps,decode=json.loads)
 cache_by_name = SqliteDict(internal.get('cache_path','./chiichan_cache.db'),tablename='cache_by_name',encode=json.dumps,decode=json.loads)
+
+lists = SqliteDict(internal.get('lists_db_path','./chiichan_lists.db'),tablename='lists',encode=json.dumps,decode=json.loads)
+lists_lock = asyncio.Lock()
+
+triggersdb = SqliteDict(internal.get('tws_db_path','./chiichan_tws.db'),tablename='triggers',encode=json.dumps,decode=json.loads)
+ratingsdb = SqliteDict(internal.get('ratings_db_path','./chiichan_ratings.db'),tablename='ratings',encode=json.dumps,decode=json.loads)
+
+ratings_lock = asyncio.Lock()
+triggers_lock = asyncio.Lock()
 
 cache_lock = asyncio.Lock()
 namecache_lock = asyncio.Lock()
@@ -30,10 +39,9 @@ if 'manga' not in db:
     db['manga'] = {}
     db.commit()
 
-intents = discord.Intents(reactions=True,messages=True)
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=config['discord'].get('prefix','$'),intents=intents)
 bot.remove_command("help")
-
 
 async def fetch_cached(id):
     if caching:
@@ -41,13 +49,37 @@ async def fetch_cached(id):
             return cache[id]
         else:
             manga = pymanga.series(id)
-            manga['id'] = id
+            if manga:
+                manga['id'] = id
 
-            async with cache_lock:
+                async with cache_lock:
+                    cache[id] = manga
+                    cache.commit()
+
+                async with namecache_lock:
+                    cache_by_name[manga['title']] = id
+                    for name in manga['associated_names']:
+                        cache_by_name[name] = id
+
+                    cache_by_name.commit()
+            return manga
+    else:
+        manga = pymanga.series(id)
+        manga['id'] = id
+        return manga
+
+def fetch_cached_sync(id):
+    if caching:
+        if id in cache:
+            return cache[id]
+        else:
+            manga = pymanga.series(id)
+            if manga:
+                manga['id'] = id
+
                 cache[id] = manga
                 cache.commit()
 
-            async with namecache_lock:
                 cache_by_name[manga['title']] = id
                 for name in manga['associated_names']:
                     cache_by_name[name] = id
@@ -66,13 +98,13 @@ async def cached_by_name(name):
         else:
             id = pymanga.search(name)['series'][0]['id']
             manga = pymanga.series(id)
+            if manga:
+                async with namecache_lock:
+                    cache_by_name[manga['title']] = id
 
-            async with namecache_lock:
-                cache_by_name[manga['title']] = id
-
-                for name in manga['associated_names']:
-                    cache_by_name[name] = id
-                    cache_by_name.commit()
+                    for name in manga['associated_names']:
+                        cache_by_name[name] = id
+                        cache_by_name.commit()
 
             return await fetch_cached(id)
     else:
@@ -80,6 +112,11 @@ async def cached_by_name(name):
         manga = pymanga.series(id)
         manga['id'] = id
         return manga
+
+def stars(rating):
+    rounded = round(rating*2)/2
+    floored = int(rounded)
+    return ('⭐' * floored) + ('✨' if rounded > floored else '')
 
 class Manga(commands.Converter):
     async def convert(self, ctx, mangaid):
@@ -115,6 +152,7 @@ class Manga(commands.Converter):
 
                 try:
                     reaction = await bot.wait_for("raw_reaction_add", timeout=60, check=lambda reaction: reaction.message_id == confirm_msg.id and reaction.user_id == ctx.author.id and str(reaction.emoji) in ["✅", "❌"])
+                    user = await bot.fetch_user(reaction.user_id)
                     if reaction.emoji.name == "✅":
                         await confirm_msg.delete()
                         return manga
@@ -122,7 +160,7 @@ class Manga(commands.Converter):
                         await ctx.send("Aw ): Please try using the mangaupdates' link or id instead of title.")
                         await confirm_msg.delete()
                     else:
-                        await confirm_msg.remove_reaction(reaction, user)
+                        await confirm_msg.remove_reaction(reaction.emoji, user)
                 except asyncio.TimeoutError:
                     await confirm_msg.delete()
             else:
@@ -133,11 +171,134 @@ class Manga(commands.Converter):
 
         return None
 
+
+def gen_search_embed(res):
+    embed = discord.Embed(
+        title=res['name'],
+        url=f"https://www.mangaupdates.com/series.html?id={res['id']}",
+        description=res['summary'],
+        color=0xff7474
+    )
+
+    if res.get('thumbnail',False):
+        embed.set_thumbnail(url=res['thumbnail'])
+
+    if res.get('year',False):
+        embed.add_field(name="Year", value=res['year'], inline=True)
+
+    if res.get('rating',False):
+        embed.add_field(name="Rating", value=res['rating'], inline=True)
+
+    embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
+
+    if res['id'] in triggersdb:
+        triggers = '; '.join(triggersdb[res['id']].keys())
+        embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
+
+    return embed
+
+class ScrollingCog(commands.Cog):
+    def __init__(self, bot, ctx, gen, gen_embed=gen_search_embed):
+        self.bot = bot
+        self.ctx = ctx
+        self.gen = gen
+        self.idx = 0
+        self.items = []
+        self.gen_embed = gen_embed
+
+    def consume(self):
+        r = next(self.gen,None)
+        while r:
+            if not filtered_genres & set([a.strip().lower() for a in r['genres']]):
+                self.items.append(self.gen_embed(r))
+                break
+            else:
+                r = next(self.gen,None)
+        if r:
+            self.idx += 1
+            return True
+        else:
+            return False
+
+    async def scroll(self):
+        if self.consume():
+            self.idx -= 1
+        else:
+            await self.ctx.send(embed = discord.Embed(title='no results ):'))
+            return
+
+        message = await self.ctx.send(embed=self.items[0])
+        # getting the message object for editing and reacting
+
+        await message.add_reaction("◀️")
+        await message.add_reaction("▶️")
+
+        def check(reaction):
+            return reaction.message_id == message.id and reaction.user_id == self.ctx.author.id and str(reaction.emoji) in ["◀️","▶️"]
+            # This makes sure nobody except the command sender can interact with the "menu"
+
+        while True:
+            try:
+                reaction = await self.bot.wait_for("raw_reaction_add", timeout=60, check=check)
+                user = await self.bot.fetch_user(reaction.user_id)
+                # waiting for a reaction to be added - times out after x seconds, 60 in this
+                # example
+
+                if str(reaction.emoji) == "▶️":
+                    if self.idx+1 > len(self.items)-1:
+                        self.consume()
+                    else:
+                        self.idx += 1
+
+                    await message.edit(embed=self.items[self.idx])
+                    await message.remove_reaction(reaction.emoji, user)
+
+                elif str(reaction.emoji) == "◀️" and self.idx > 0:
+                    self.idx -= 1
+                    await message.edit(embed=self.items[self.idx])
+                    await message.remove_reaction(reaction.emoji, user)
+
+                else:
+                    await message.remove_reaction(reaction.emoji, user)
+            except asyncio.TimeoutError:
+                break
+                # ending the loop if user doesn't react after x seconds
+
 @bot.listen()
 async def on_command_error(ctx,exception):
     traceback.print_exception(type(exception), exception, exception.__traceback__, file=sys.stderr)
     if isinstance(exception, commands.errors.MissingRequiredArgument):
-        await ctx.send('Please specify a manga :c')
+        if ctx.invoked_with == "lists":
+            await ctx.send('Invalid usage of command :/')
+            h = f"""Usage:
+**{ctx.prefix}lists [user]**
+shows [user]'s lists
+
+**{ctx.prefix}lists [user] [list name]**
+shows a [user]'s list.
+
+**{ctx.prefix}lists add [list name]**
+adds a manga to [list name]. creates list if it doesn't exist yet
+            """
+            await ctx.send(h)
+        elif invoked_command == "tw":
+            await ctx.send('Invalid usage of command :/')
+            h = f"""
+            **{ctx.prefix}tw show [manga name | mangaupdates link]**
+            see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
+
+            **{ctx.prefix}tw add [manga name | mangaupdates link]**
+            submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
+
+            *ex: {ctx.prefix}tw show Still Sick*
+            *or: {ctx.prefix}tw show https://www.mangaupdates.com/series.html?id=148031*
+
+            *ex: {ctx.prefix}tw add Still Sick*
+            *or: {ctx.prefix}tw add https://www.mangaupdates.com/series.html?id=148031*
+            """
+            await ctx.send(h)
+        else:
+            await ctx.send('Please specify a manga :c')
 
 
 @bot.command()
@@ -164,99 +325,14 @@ async def search(ctx, *, querystring):
         params['name'] = params['title']
 
     if 'name' not in params and 'orderby' not in params:
-        params['orderby'] = rating
-
-    def result_to_embed(res):
-        embed = discord.Embed(
-            title=res['name'],
-            url=f"https://www.mangaupdates.com/series.html?id={res['id']}",
-            description=res['summary'],
-            color=0xff7474
-        )
-
-        if res.get('thumbnail',False):
-            embed.set_thumbnail(url=res['thumbnail'])
-
-        if res.get('year',False):
-            embed.add_field(name="Year", value=res['year'], inline=True)
-
-        if res.get('rating',False):
-            embed.add_field(name="Rating", value=res['rating'], inline=True)
-
-        embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
-
-        if f"triggers.{res['id']}" in db:
-            triggers = '; '.join(db[f"triggers.{res['id']}"].keys())
-            embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
-
-        return embed
-
-    none_embed = discord.Embed(title='no results ):')
-
-    idx = 0
-
-    results_iter = pymanga.advanced_search_iter(params)
-    results = []
-
-    def consume():
-        r = next(results_iter,None)
-        while r:
-            if not filtered_genres & set([a.strip().lower() for a in r['genres']]):
-                results.append(result_to_embed(r))
-                break
-            else:
-                r = next(results_iter,None)
-        if r:
-            return 1
-        else:
-            return 0
-
-    consume()
-
-    message = await ctx.send(embed=results[0])
-    # getting the message object for editing and reacting
-
-    await message.add_reaction("◀️")
-    await message.add_reaction("▶️")
-
-    def check(reaction, user):
-        return user == ctx.author and str(reaction.emoji) in ["◀️", "▶️"]
-        # This makes sure nobody except the command sender can interact with the "menu"
+        params['orderby'] = 'rating'
 
 
-    while True:
-        try:
-            reaction, user = await bot.wait_for("reaction_add", timeout=60, check=check)
-            # waiting for a reaction to be added - times out after x seconds, 60 in this
-            # example
-
-            if str(reaction.emoji) == "▶️":
-                if idx+1 > len(results)-1:
-                    idx += consume()
-                else:
-                    idx += 1
-
-                await message.edit(embed=results[idx])
-                await message.remove_reaction(reaction, user)
-
-            elif str(reaction.emoji) == "◀️" and idx > 0:
-                idx -= 1
-                await message.edit(embed=results[idx])
-                await message.remove_reaction(reaction, user)
-
-            else:
-                await message.remove_reaction(reaction, user)
-        except asyncio.TimeoutError:
-            break
-            # ending the loop if user doesn't react after x seconds
+    scroll = ScrollingCog(bot,ctx,pymanga.advanced_search_iter(params))
+    await scroll.scroll()
 
 @bot.command()
 async def series(ctx, *, querystring):
-    def stars(rating):
-        rounded = round(rating*2)/2
-        floored = int(rounded)
-        return ('⭐' * floored) + ('✨' if rounded > floored else '')
-
     manga = await cached_by_name(querystring)
     if manga:
         id = manga['id']
@@ -305,12 +381,12 @@ async def series(ctx, *, querystring):
             embed.add_field(name="MangaUpdates' Rating",
              value=manga['average']['average'], inline=True)
 
-        if f'ratings.{id}' in db and db[f'ratings.{id}'] != {}:
+        if id in ratingsdb and ratingsdb[id] != {}:
             embed.add_field(name="Chii-chan's Rating",
-             value=stars(db[f'ratings.{id}']['average']), inline=True)
+             value=stars(ratingsdb[id]['average']), inline=True)
 
-        if f"triggers.{id}" in db:
-            triggers = '; '.join(db[f"triggers.{id}"].keys())
+        if id in triggersdb:
+            triggers = '; '.join(triggersdb[id].keys())
             embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
 
 
@@ -379,19 +455,20 @@ async def rate(ctx,*,manga: Manga):
         rating = await convert_rating(msg.content)
 
         id = manga['id']
-        if f'ratings.{id}' not in db:
-            db[f'ratings.{id}'] = {'users':{}}
+        if id not in db:
+            ratingsdb[id] = {'users':{}}
 
-        ratings = db[f'ratings.{id}']
-        ratings['users'][ctx.author.id] = rating
+        async with ratings_lock:
+            ratings = ratingsdb[id]
+            ratings['users'][ctx.author.id] = rating
 
-        ratings['users'] = dict(sorted(ratings['users'].items(), key=lambda item: item[1]))
-        rating_vals = ratings['users'].values()
-        ratings['average'] = statistics.fmean(rating_vals)
-        ratings['median'] = statistics.median(rating_vals)
+            ratings['users'] = dict(sorted(ratings['users'].items(), key=lambda item: item[1]))
+            rating_vals = ratings['users'].values()
+            ratings['average'] = statistics.fmean(rating_vals)
+            ratings['median'] = statistics.median(rating_vals)
 
-        db[f'ratings.{id}'] = ratings
-        db.commit()
+            ratingsdb[id] = ratings
+            ratingsdb.commit()
 
         await ctx.send(f"rating submitted ;)")
         await ctx.send(f"the average rating for {manga['title']} is now {ratings['average']:.1f}/5")
@@ -405,7 +482,21 @@ async def rate(ctx,*,manga: Manga):
 @bot.group()
 async def tw(ctx):
     if ctx.invoked_subcommand is None:
-        await ctx.send('please specify a tw subcommand!')
+        await ctx.send('Invalid usage of command :/')
+        h = f"""
+**{ctx.prefix}tw show [manga name | mangaupdates link]**
+see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
+
+**{ctx.prefix}tw add [manga name | mangaupdates link]**
+submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
+
+*ex: {ctx.prefix}tw show Still Sick*
+*or: {ctx.prefix}tw show <https://www.mangaupdates.com/series.html?id=148031>*
+
+*ex: {ctx.prefix}tw add Still Sick*
+*or: {ctx.prefix}tw add <https://www.mangaupdates.com/series.html?id=148031>*
+        """
+        await ctx.send(h)
 
 @tw.command(name="show")
 async def get_triggers(ctx,*,manga: Manga):
@@ -413,11 +504,11 @@ async def get_triggers(ctx,*,manga: Manga):
         return
 
     id = manga['id']
-    if not db.get(f'triggers.{id}',{}):
+    if not id in triggersdb:
         await ctx.send("No one has added trigger warnings for this manga yet.")
         return
 
-    triggers = db[f'triggers.{id}']
+    triggers = triggersdb[id]
     await ctx.send("people have added the following trigger warnings for this manga:")
 
     msg = "||"
@@ -432,20 +523,21 @@ async def add_triggers(ctx,*,manga: typing.Optional[Manga]):
         return
 
     id = manga['id']
-    if f'triggers.{id}' not in db:
-        db[f'triggers.{id}'] = {}
+    if id not in triggersdb:
+        triggersdb[id] = {}
 
-    warnings = db[f'triggers.{id}']
+    warnings = triggersdb[id]
     question = await ctx.send("What trigger warnings would you like to add to this manga? (*separate multiple warnings using ';'.*)\n*p.s: please spoiler your message if you're in a server!*")
 
     try:
         msg = await bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
-        for trigger in (warning.strip() for warning in msg.content.replace('||','').split(';')):
-            if trigger not in warnings:
-                warnings[trigger] = []
+        async with triggers_lock:
+            for trigger in (warning.strip() for warning in msg.content.replace('||','').split(';')):
+                if trigger not in warnings:
+                    warnings[trigger] = []
 
-            if ctx.author.id not in warnings[trigger]:
-                warnings[trigger].append(ctx.author.id)
+                if ctx.author.id not in warnings[trigger]:
+                    warnings[trigger].append(ctx.author.id)
 
         channel = await bot.fetch_channel(msg.channel.id)
         if channel.type != ChannelType.private and channel.type != ChannelType.group:
@@ -453,9 +545,90 @@ async def add_triggers(ctx,*,manga: typing.Optional[Manga]):
     except asyncio.TimeoutError:
         await question.delete()
 
-    db[f'triggers.{id}'] = warnings
-    db.commit()
+    async with triggers_lock:
+        triggersdb[id] = warnings
+        triggersdb.commit()
     await ctx.send("trigger warnings added to database. thank you for submitting them :)")
+
+@bot.group(name='lists',invoke_without_command=True)
+async def listsg(ctx,user: typing.Union[discord.Member,discord.User],*,list=None):
+    def gen_list_embed(res):
+        embed = discord.Embed(
+            title=f"{user.display_name}'s {list} list",
+            description=f"[**{res['title']}**](https://www.mangaupdates.com/series.html?id={res['id']})\n" + res['description'].split('\n',1)[0],
+            color=0xff7474
+        )
+
+        if res.get('image',False):
+            embed.set_thumbnail(url=res['image'])
+
+        if res.get('year',False):
+            embed.add_field(name="Year", value=res['year'], inline=True)
+
+        if res.get('average',{}).get('average',False):
+            embed.add_field(name="MangaUpdates' Rating", value=res['average']['average'], inline=True)
+
+        embed.add_field(name="Genres", value=', '.join(res['genres']), inline=False)
+
+        if res['id'] in triggersdb:
+            triggers = '; '.join(triggersdb[res['id']].keys())
+            embed.add_field(name="User-submitted TWs",value='||'+triggers+'||',inline=False)
+
+        return embed
+
+    if user.id not in lists:
+        await ctx.send(f'{user.display_name} has no lists ):')
+        return
+
+    user_lists = lists[user.id]
+
+    if not list:
+        await ctx.send(f'{user.display_name} has the following lists:')
+        await ctx.send('\n'.join([f"-> {list}" for list in user_lists.keys()]))
+        return
+
+    if list not in user_lists:
+        await ctx.send(f'{user.display_name} has no such list ):')
+        return
+
+    generator = (fetch_cached_sync(id) for id in user_lists[list])
+    scrolling = ScrollingCog(bot,ctx,generator,gen_embed=gen_list_embed)
+    await scrolling.scroll()
+
+@listsg.command(name='add')
+async def add_to_list(ctx,*,list):
+    list = list.replace('\n','')
+
+    if ctx.author.id not in lists:
+        async with lists_lock:
+            print("hi")
+            lists[ctx.author.id] = {}
+            lists.commit()
+
+
+    if list not in lists[ctx.author.id]:
+        async with lists_lock:
+            user_lists = lists[ctx.author.id]
+            user_lists[list] = []
+            lists[ctx.author.id] = user_lists
+            lists.commit()
+
+
+    await ctx.send("What manga do you want to add to this list?")
+
+    msg = await bot.wait_for('message', check=lambda m: m.author.id == ctx.author.id and m.channel.id == ctx.channel.id)
+    manga = await Manga().convert(ctx,msg.content)
+
+    if not manga:
+        return
+
+    async with lists_lock:
+        user_lists = lists[ctx.author.id]
+        user_lists[list].append(manga['id'])
+        lists[ctx.author.id] = user_lists
+        lists.commit()
+
+    await ctx.send(f"Added {manga['title']} to your list {list} ^^")
 
 @bot.command(name='admin:notify->toggle')
 async def toggle_notify(ctx,on: typing.Optional[bool] = None):
@@ -534,6 +707,17 @@ async def help(ctx,*args):
 ⭐ |        **{ctx.prefix}rate [manga name | mangaupdates link]**
                 -> submit a rating for a manga!
 
+🔖 |        **{ctx.prefix}lists [user]**
+                -> shows [user]'s lists
+                *(users may be a nickname, a username, or username#tag)*
+
+🔖 |        **{ctx.prefix}lists [user] [list name]**
+                -> shows a [user]'s list.
+                *(users may be a nickname, a username, or username#tag)*
+
+🔖 |        **{ctx.prefix}lists add [list name]**
+                -> adds a manga to [list name]. creates list if it doesn't exist yet
+
 ⚠️ |        **{ctx.prefix}tw show [manga name | mangaupdates link]**
                 -> see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
 
@@ -565,12 +749,25 @@ async def help(ctx,*args):
         *ex: {ctx.prefix}subscribe Still Sick*
         *or: {ctx.prefix}subscribe https://www.mangaupdates.com/series.html?id=148031*
         """
+    elif 'lists' in args[0]:
+        h = f"""
+        🔖 |        **{ctx.prefix}lists [user]**
+                        -> shows [user]'s lists
+                        *(users may be a nickname, a username, or username#tag)*
+
+        🔖 |        **{ctx.prefix}lists [user] [list name]**
+                        -> shows a [user]'s list.
+                        *(users may be a nickname, a username, or username#tag)*
+
+        🔖 |        **{ctx.prefix}lists add [list name]**
+                        -> adds a manga to [list name]. creates list if it doesn't exist yet
+        """
     elif 'tw' in args[0]:
         h = f"""
-        **{ctx.prefix}tw show [manga name | mangaupdates link]**
+⚠️ |     **{ctx.prefix}tw show [manga name | mangaupdates link]**
         see trigger warnings submitted for this manga by other users. (p.s: the triggers are spoilered. you can also use this command in a dm with this bot.)
 
-        **{ctx.prefix}tw add [manga name | mangaupdates link]**
+⚠️ |     **{ctx.prefix}tw add [manga name | mangaupdates link]**
         submit trigger warnings for this manga. (p.s: you can also use this command in a dm with this bot.)
 
         *ex: {ctx.prefix}tw show Still Sick*
@@ -637,6 +834,26 @@ async def help(ctx,*args):
 
     embed=discord.Embed(description=h, color=0xf77665)
     await ctx.send(embed=embed)
+
+@bot.command()
+async def changelog(ctx):
+    h = f"""
+    we have lists now. so you can share you favourites, your recommendations and your 'never read this; my eyes are bleeding!' series.
+
+    🔖 |        **{ctx.prefix}lists [user]**
+                    -> shows [user]'s lists
+                    *(users may be a nickname, a username, or username#tag)*
+
+    🔖 |        **{ctx.prefix}lists [user] [list name]**
+                    -> shows a [user]'s list.
+                    *(users may be a nickname, a username, or username#tag)*
+
+    🔖 |        **{ctx.prefix}lists add [list name]**
+                    -> adds a manga to [list name]. creates list if it doesn't exist yet
+    """
+    embed=discord.Embed(title="The Lists Update",description=h, color=0xf77665)
+    await ctx.send(embed=embed)
+
 
 class NotifierCog(commands.Cog):
     def __init__(self, bot):
